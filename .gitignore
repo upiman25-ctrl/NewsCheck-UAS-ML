@@ -1,0 +1,14 @@
+# Dataset lokal
+data/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Jupyter Notebook
+.ipynb_checkpoints/
+
+# File konfigurasi pribadi
+.env
