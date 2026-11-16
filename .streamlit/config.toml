@@ -1,0 +1,5 @@
+# Tema tampilan NewsCheck.
+# Dikunci ke mode terang supaya tampilan konsisten saat demo/presentasi.
+[theme]
+base = "light"
+primaryColor = "#2563eb"
