@@ -55,6 +55,11 @@ st.html(
     .nc-desc { font-size: 0.95rem; }
 
     .nc-footer { text-align: center; font-size: 0.85rem; opacity: 0.6; padding-top: 0.5rem; }
+
+    /* Teks bantuan bawaan "Press Enter to submit form · 0/300" menutupi judul
+       yang panjang (terutama di HP), jadi disembunyikan. Batas 300 karakter
+       tetap berlaku dan dijelaskan di tooltip input. */
+    [data-testid="InputInstructions"] { display: none; }
     </style>
     """
 )
@@ -74,20 +79,83 @@ except Exception as e:
     st.caption(f"Detail teknis: {e}")
     st.stop()
 
+# Statistik sumber (model/domain_stats.json) bersifat opsional. Jika file belum
+# dibuat dengan `python source_stats.py`, kolom link tidak ditampilkan dan
+# aplikasi berjalan seperti biasa.
+try:
+    import source_stats
 
-def ada_kata_dikenali(teks):
-    """Cek apakah minimal satu kata pada judul ada di kosakata TF-IDF model.
+    STATISTIK_SUMBER = source_stats.muat_statistik()
+except Exception:
+    STATISTIK_SUMBER = None
+
+
+# Jika kurang dari 50% kata penting dikenali model, hasil tetap ditampilkan
+# tetapi diberi peringatan bahwa prediksinya kurang bisa diandalkan.
+BATAS_KATA_DIKENALI = 0.5
+
+
+def cek_kosakata(teks):
+    """Hitung berapa kata penting pada judul yang ada di kosakata TF-IDF model.
+
+    "Kata penting" = kata yang tersisa setelah TF-IDF membuang stop words
+    (the, is, of, ...). Mengembalikan tuple (jumlah_dikenali, jumlah_kata).
 
     Jika tidak ada kata yang dikenali, vektor TF-IDF berisi nol semua dan
-    model tetap mengeluarkan label tanpa dasar apa pun. Kasus ini kita tolak.
-    Hanya membaca model yang sudah dimuat predict.py, tanpa mengubahnya.
+    model tetap mengeluarkan label tanpa dasar apa pun, jadi kasus ini ditolak.
+    Fungsi ini hanya membaca model yang sudah dimuat predict.py, tanpa mengubahnya.
     """
     try:
         tfidf = predict.model.named_steps["tfidf"]
-        return tfidf.transform([teks]).nnz > 0
+        kata = set(tfidf.build_analyzer()(teks))
+        dikenali = sum(1 for k in kata if k in tfidf.vocabulary_)
+        return dikenali, len(kata)
     except Exception:
         # Jika struktur model berubah, lewati pengecekan agar aplikasi tetap jalan.
-        return True
+        return None
+
+
+def format_angka(n):
+    """1234 -> "1.234" (format angka Indonesia)."""
+    return f"{n:,}".replace(",", ".")
+
+
+def tampilkan_catatan_sumber(link):
+    """Tampilkan hitungan berita FAKE/REAL dari situs link tersebut di dataset.
+
+    Catatan ini terpisah dari prediksi: model tetap hanya membaca judul.
+    """
+    domain = source_stats.ambil_domain(link)
+    if domain is None:
+        st.warning(
+            "Link berita tidak bisa dibaca, jadi catatan sumber tidak ditampilkan. "
+            "Contoh link yang benar: *https://www.reuters.com/world/...*",
+            icon="⚠️",
+        )
+        return
+
+    cocok = source_stats.cari_domain(domain, STATISTIK_SUMBER["domain"])
+    with st.container(border=True):
+        st.markdown("**🔗 Catatan sumber**")
+        if cocok is None:
+            st.markdown(
+                f"Situs `{domain}` tidak ada di dataset NewsCheck, jadi belum ada "
+                "catatan untuk sumber ini."
+            )
+        else:
+            domain_cocok, jumlah = cocok
+            fake, real = jumlah["fake"], jumlah["real"]
+            total = fake + real
+            st.markdown(
+                f"Di dataset NewsCheck ada **{format_angka(total)} berita** dari "
+                f"`{domain_cocok}`: **{format_angka(fake)} berlabel FAKE** "
+                f"({round(100 * fake / total)}%) dan **{format_angka(real)} berlabel "
+                f"REAL** ({round(100 * real / total)}%)."
+            )
+        st.caption(
+            "Catatan ini hanya hitungan dari dataset, bukan penilaian apakah situs "
+            "tersebut terpercaya, dan tidak dipakai model untuk prediksi di atas."
+        )
 
 # ---------------------------------------------------------------
 # 4. Halaman utama: judul & deskripsi
@@ -111,9 +179,22 @@ st.html(
 with st.form("form_cek_berita"):
     headline = st.text_input(
         "Judul berita (bahasa Inggris)",
+        key="judul",
         placeholder="Contoh: Senate passes bill to fund infrastructure projects",
-        help="Masukkan judul (headline) saja, bukan isi berita.",
+        help="Masukkan judul (headline) saja, bukan isi berita. Maksimal 300 "
+        "karakter. Tekan Enter atau klik Check News untuk memeriksa.",
+        max_chars=300,
     )
+    link = ""
+    if STATISTIK_SUMBER:
+        link = st.text_input(
+            "Link berita (opsional)",
+            key="link",
+            placeholder="Contoh: https://www.reuters.com/world/...",
+            help="Jika diisi, NewsCheck menampilkan berapa berita FAKE dan REAL "
+            "dari situs ini di dataset. Link tidak memengaruhi prediksi model.",
+            max_chars=500,
+        )
     tombol_cek = st.form_submit_button(
         "Check News", type="primary", icon="🔍", width="stretch"
     )
@@ -138,10 +219,11 @@ TAMPILAN_HASIL = {
 
 if tombol_cek:
     headline = (headline or "").strip()
+    kosakata = cek_kosakata(headline) if headline else None
 
     if not headline:
         st.warning("Judul berita tidak boleh kosong. Silakan isi dulu.", icon="⚠️")
-    elif not ada_kata_dikenali(headline):
+    elif kosakata is not None and kosakata[0] == 0:
         st.warning(
             "Model tidak mengenali kata-kata pada judul ini, jadi tidak bisa "
             "memberi prediksi. Gunakan judul berita berbahasa Inggris, misalnya: "
@@ -166,6 +248,19 @@ if tombol_cek:
                 </div>
                 """
             )
+            if kosakata is not None:
+                dikenali, jumlah_kata = kosakata
+                if dikenali / jumlah_kata < BATAS_KATA_DIKENALI:
+                    st.warning(
+                        f"Model hanya mengenali **{dikenali} dari {jumlah_kata} kata "
+                        "penting** pada judul ini, jadi hasil prediksi di atas "
+                        "**kurang bisa diandalkan**. Ini biasa terjadi jika judul "
+                        "tidak berbahasa Inggris atau memakai banyak kata yang "
+                        "tidak ada di data latih.",
+                        icon="⚠️",
+                    )
+            if STATISTIK_SUMBER and (link or "").strip():
+                tampilkan_catatan_sumber(link)
             st.info(
                 "Hasil ini adalah **prediksi Machine Learning** berdasarkan pola "
                 "dataset pelatihan, **bukan verifikasi fakta**. Model bisa salah, "
@@ -209,6 +304,14 @@ with langkah_3.container(border=True):
         "latih, lalu menentukan judul baru berada di sisi mana."
     )
 
+BATASAN_SUMBER = (
+    """
+- Catatan sumber (jika link diisi) hanya hitungan berita per situs di dataset,
+  bukan penilaian kredibilitas situs, dan **tidak dipakai model** untuk prediksi."""
+    if STATISTIK_SUMBER
+    else ""
+)
+
 with st.expander("📊 Detail evaluasi & batasan model"):
     st.markdown(
         """
@@ -228,9 +331,12 @@ penghapusan judul duplikat), dibagi 80% data latih (2.264) dan 20% data uji
 - Model hanya membaca **judul**, bukan isi berita.
 - Jika tidak ada satu pun kata pada judul yang dikenali model, aplikasi tidak
   menampilkan prediksi.
+- Jika model mengenali kurang dari setengah kata penting pada judul (misalnya
+  judul berbahasa Indonesia), prediksi tetap ditampilkan disertai peringatan
+  bahwa hasilnya kurang bisa diandalkan.
 - Model **tidak memverifikasi fakta**. Model hanya mengenali pola kata dari
-  data latih, sehingga hasilnya bisa salah.
-"""
+  data latih, sehingga hasilnya bisa salah."""
+        + BATASAN_SUMBER
     )
 
 # ---------------------------------------------------------------

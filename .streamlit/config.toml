@@ -3,3 +3,12 @@
 [theme]
 base = "light"
 primaryColor = "#2563eb"
+
+# Sembunyikan tombol "Deploy" dan menu khusus developer agar tampilan bersih
+# saat presentasi.
+[client]
+toolbarMode = "minimal"
+
+# Jangan kirim statistik pemakaian ke server Streamlit (aplikasi cukup lokal).
+[browser]
+gatherUsageStats = false
